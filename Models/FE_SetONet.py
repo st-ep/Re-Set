@@ -5,7 +5,7 @@ from tqdm import trange
 from torch.optim.lr_scheduler import _LRScheduler # Import base class for type hinting if needed
 
 # This implements a DeepOSet using PyTorch
-class DeepOSet(torch.nn.Module):
+class SetONet(torch.nn.Module):
 
     def __init__(self,
                  input_size_src,      # Dimensionality of sensor location x_i (e.g., 1 for 1D)
@@ -26,7 +26,7 @@ class DeepOSet(torch.nn.Module):
                  use_positional_encoding=True, # Flag to enable/disable positional encoding
                  pos_encoding_dim=64, # Dimension for sinusoidal positional encoding
                  pos_encoding_type='skip', # Type: 'sinusoidal', or 'skip'
-                 pos_encoding_max_freq=1000.0, # Max frequency/scale for sinusoidal encoding
+                 pos_encoding_max_freq=100.0, # Max frequency/scale for sinusoidal encoding
                  encoding_strategy='concatenate', # Strategy for combining positional and sensor features. Only 'concatenate' is supported.
                  aggregation_type: str = "mean",  # 'mean' or 'attention'
                  attention_n_tokens: int = 8,     # k – number of learnable query tokens
