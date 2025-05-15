@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from FunctionEncoder import BaseDataset, BaseCallback # Keep BaseDataset/Callback if used
+from FunctionEncoder.Dataset.BaseDataset import BaseDataset
+from FunctionEncoder.Callbacks.BaseCallback import BaseCallback
 from tqdm import trange
 from torch.optim.lr_scheduler import _LRScheduler # Import base class for type hinting if needed
 
@@ -29,7 +30,8 @@ class SetONet(torch.nn.Module):
                  pos_encoding_max_freq=100.0, # Max frequency/scale for sinusoidal encoding
                  encoding_strategy='concatenate', # Strategy for combining positional and sensor features. Only 'concatenate' is supported.
                  aggregation_type: str = "mean",  # 'mean' or 'attention'
-                 attention_n_tokens: int = 8,     # k – number of learnable query tokens
+                 attention_n_tokens: int = 1,     # k – number of learnable query tokens
+                 concat_sensor_derivative_to_branch_input: bool = False # New parameter
                  ):
         super().__init__()
 
@@ -44,6 +46,7 @@ class SetONet(torch.nn.Module):
         self.pos_encoding_type = pos_encoding_type
         self.pos_encoding_max_freq = pos_encoding_max_freq # Store max frequency/scale
         self.encoding_strategy = encoding_strategy
+        self.concat_sensor_derivative_to_branch_input = concat_sensor_derivative_to_branch_input # Store new parameter
 
         self.p = p
         self.phi_hidden_size = phi_hidden_size
@@ -61,7 +64,7 @@ class SetONet(torch.nn.Module):
         self.attention_n_tokens = attention_n_tokens
 
         if self.aggregation == "attention":
-            from utils.attention_pool import AttentionPool
+            from .utils.attention_pool import AttentionPool
             self.pool = AttentionPool(phi_output_size,
                                       n_heads=4,
                                       n_tokens=self.attention_n_tokens)
@@ -104,8 +107,13 @@ class SetONet(torch.nn.Module):
             else: # This case handles pos_encoding_type == 'skip' or if use_positional_encoding (arg) was explicitly False
                 # Original input: raw position + sensor value
                 phi_input_dim = input_size_src + output_size_src
+            
+            # If concatenating sensor derivative values, add their dimension
+            if self.concat_sensor_derivative_to_branch_input:
+                phi_input_dim += output_size_src # Assuming derivative has same dim as sensor value
 
             # Phi network: processes concatenated (encoded_location, value) or (location, value) pairs
+            # Potentially also with (..., derivative_value)
             self.phi = nn.Sequential(
                 nn.Linear(phi_input_dim, phi_hidden_size),
                 activation_fn(),
@@ -189,12 +197,15 @@ class SetONet(torch.nn.Module):
 
         return encoding
 
-    def forward_branch(self, xs, us):
+    def forward_branch(self, xs, us, us_derivs=None):
         """
         Forward pass for the Deep Sets Branch.
         Args:
             xs (torch.Tensor): Sensor locations, shape (batch_size, n_sensors, input_size_src)
             us (torch.Tensor): Sensor values, shape (batch_size, n_sensors, output_size_src)
+            us_derivs (torch.Tensor, optional): Sensor derivative values (e.g., u'(xs)), 
+                                                shape (batch_size, n_sensors, output_size_src).
+                                                Required if self.concat_sensor_derivative_to_branch_input is True.
         Returns:
             torch.Tensor: Branch output, shape (batch_size, p, output_size_tgt)
         """
@@ -225,6 +236,15 @@ class SetONet(torch.nn.Module):
                 # Shape: (batch * n_sensors, input_size_src + output_size_src)
                 phi_input_reshaped = torch.cat((xs_reshaped, us_reshaped), dim=1)
 
+            # --- Concatenate sensor derivative values if specified ---
+            if self.concat_sensor_derivative_to_branch_input:
+                if us_derivs is None:
+                    raise ValueError("us_derivs must be provided when concat_sensor_derivative_to_branch_input is True.")
+                if us_derivs.shape != us.shape: # Basic check, could be more specific
+                    raise ValueError(f"us_derivs shape {us_derivs.shape} must match us shape {us.shape}.")
+                
+                us_derivs_reshaped = us_derivs.reshape(batch_size * n_sensors, self.output_size_src)
+                phi_input_reshaped = torch.cat((phi_input_reshaped, us_derivs_reshaped), dim=1)
         # --- End Encoding Strategy ---
 
         # Apply phi network
@@ -275,18 +295,21 @@ class SetONet(torch.nn.Module):
         trunk_out = trunk_out_flat.view(batch_size, n_points, self.p, self.output_size_tgt)
         return trunk_out
 
-    def forward(self, xs, us, ys):
+    def forward(self, xs, us, ys, us_derivs=None):
         """
         Full forward pass for DeepOSet.
         Args:
             xs (torch.Tensor): Sensor locations, shape (batch_size, n_sensors, input_size_src)
             us (torch.Tensor): Sensor values, shape (batch_size, n_sensors, output_size_src)
             ys (torch.Tensor): Trunk input locations, shape (batch_size, n_points, input_size_tgt)
+            us_derivs (torch.Tensor, optional): Sensor derivative values (e.g., u'(xs)), 
+                                                shape (batch_size, n_sensors, output_size_src).
+                                                Passed to forward_branch if self.concat_sensor_derivative_to_branch_input is True.
         Returns:
             torch.Tensor: Predicted output G(u)(y), shape (batch_size, n_points, output_size_tgt)
         """
         # Get branch and trunk outputs
-        b = self.forward_branch(xs, us) # Shape: (batch, p, out_tgt)
+        b = self.forward_branch(xs, us, us_derivs=us_derivs) # Pass us_derivs here
         t = self.forward_trunk(ys)      # Shape: (batch, n_points, p, out_tgt)
 
         # Combine using einsum (dot product over latent dimension p)
@@ -423,6 +446,9 @@ class SetONet(torch.nn.Module):
         params["aggregation_type"] = self.aggregation
         if self.aggregation == "attention":
             params["attention_n_tokens"] = self.attention_n_tokens
+        
+        # Log the new parameter
+        params["concat_sensor_derivative_to_branch_input"] = self.concat_sensor_derivative_to_branch_input
 
         params = {k: str(v) for k, v in params.items()}
         return params

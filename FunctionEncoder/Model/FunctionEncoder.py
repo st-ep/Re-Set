@@ -2,6 +2,7 @@ from typing import Union, Tuple
 import torch
 from tqdm import trange
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np # Added for np.prod
 
 from FunctionEncoder.Callbacks.BaseCallback import BaseCallback
 from FunctionEncoder.Dataset.BaseDataset import BaseDataset
@@ -10,7 +11,119 @@ from FunctionEncoder.Model.Architecture.CNN import CNN
 from FunctionEncoder.Model.Architecture.Euclidean import Euclidean
 from FunctionEncoder.Model.Architecture.MLP import MLP
 from FunctionEncoder.Model.Architecture.ParallelMLP import ParallelMLP
-from FunctionEncoder.Model.Architecture.RepresentationEncoderDeepSets import RepresentationEncoderDeepSets
+# from Models.SetONet import SetONet # Removed top-level import to break circular dependency
+
+
+# Wrapper class for using SetONet as a representation encoder
+class SetONetEncoderWrapper(torch.nn.Module):
+    def __init__(self, input_size: tuple[int], output_size: tuple[int], n_basis: int, **setonet_kwargs):
+        super().__init__()
+        from Models.SetONet import SetONet # Local import
+        
+        self.func_input_size_tuple = input_size
+        self.func_output_size_tuple = output_size
+
+        s_input_size_src = int(np.prod(input_size))
+        s_output_size_src = int(np.prod(output_size))
+
+        # Prepare kwargs for SetONet, starting with defaults or derived values
+        actual_setonet_kwargs = {
+            "input_size_src": s_input_size_src,
+            "output_size_src": s_output_size_src,
+            "input_size_tgt": 1,  # Dummy for trunk, not used by encoder part
+            "output_size_tgt": 1, # Makes branch output (batch, p, 1)
+            "p": n_basis,         # SetONet's latent dim 'p' is used as representation dim
+            "phi_hidden_size": 256, # Default
+            "rho_hidden_size": 256, # Default
+            "phi_output_size": 128, # Default
+            "aggregation_type": "mean", # Default
+            # Add other SetONet defaults here if necessary
+        }
+
+        # Create a copy of user-provided kwargs to modify
+        processed_setonet_kwargs = setonet_kwargs.copy()
+
+        # Map 'aggregation' to 'aggregation_type' if present
+        if "aggregation" in processed_setonet_kwargs:
+            actual_setonet_kwargs["aggregation_type"] = processed_setonet_kwargs.pop("aggregation")
+        
+        # Update with remaining user-provided kwargs, allowing them to override defaults
+        # or add new ones that SetONet directly accepts (e.g., activation_fn, attention_n_tokens)
+        actual_setonet_kwargs.update(processed_setonet_kwargs)
+
+
+        self.setonet = SetONet(**actual_setonet_kwargs)
+        self.n_basis = n_basis
+
+    def forward(self, example_xs, example_ys):
+        batch_size = example_xs.shape[0]
+        n_sensors = example_xs.shape[1]
+
+        flat_input_dim = self.setonet.input_size_src
+        flat_output_dim = self.setonet.output_size_src
+
+        xs_flat = example_xs.reshape(batch_size, n_sensors, flat_input_dim)
+        ys_flat = example_ys.reshape(batch_size, n_sensors, flat_output_dim)
+        
+        # Assuming us_derivs is not used by default for encoder, pass None
+        # If SetONet requires us_derivs based on its config, this might need adjustment
+        # or setonet_kwargs should control 'concat_sensor_derivative_to_branch_input'
+        representation_extradim = self.setonet.forward_branch(xs_flat, ys_flat, us_derivs=None)
+        
+        representation = representation_extradim.squeeze(-1)
+        
+        assert representation.shape == (batch_size, self.n_basis), \
+            f"Representation shape mismatch. Expected {(batch_size, self.n_basis)}, got {representation.shape}"
+            
+        return representation
+
+    @staticmethod
+    def predict_number_params(input_size: tuple[int], output_size: tuple[int], n_basis: int, **kwargs):
+        from Models.SetONet import SetONet # Local import
+        s_input_size_src = int(np.prod(input_size))
+        s_output_size_src = int(np.prod(output_size))
+
+        # Base arguments for SetONet constructor
+        setonet_constructor_args = {
+            "input_size_src": s_input_size_src,
+            "output_size_src": s_output_size_src,
+            "input_size_tgt": 1, 
+            "output_size_tgt": 1,
+            "p": n_basis,
+            # Add SetONet defaults that are not typically in encoder_kwargs but needed for instantiation
+            "phi_hidden_size": 256, 
+            "rho_hidden_size": 256,
+            "phi_output_size": 128,
+            "aggregation_type": "mean", 
+        }
+
+        # Create a copy of user-provided kwargs (from encoder_kwargs) to modify
+        processed_encoder_kwargs = kwargs.copy()
+
+        # Map 'aggregation' to 'aggregation_type' if present in encoder_kwargs
+        if "aggregation" in processed_encoder_kwargs:
+            setonet_constructor_args["aggregation_type"] = processed_encoder_kwargs.pop("aggregation")
+        
+        # Update with remaining user-provided kwargs, allowing them to override defaults
+        # or add new ones that SetONet directly accepts (e.g., activation_fn, attention_n_tokens)
+        setonet_constructor_args.update(processed_encoder_kwargs)
+
+
+        try:
+            # Attempt to call SetONet's own predict_number_params if it exists
+            if hasattr(SetONet, 'predict_number_params') and callable(getattr(SetONet, 'predict_number_params')):
+                 # This assumes SetONet.predict_number_params has a compatible signature
+                 # and can handle the processed setonet_constructor_args
+                 return SetONet.predict_number_params(**setonet_constructor_args)
+            else:
+                # Fallback: instantiate and count
+                temp_setonet = SetONet(**setonet_constructor_args)
+                return sum(p.numel() for p in temp_setonet.parameters())
+        except Exception as e:
+            print(f"Warning: Error in SetONetEncoderWrapper.predict_number_params: {e}. Instantiating SetONet to count params.")
+            # Fallback if static method check or call fails, try instantiation directly
+            temp_setonet = SetONet(**setonet_constructor_args) # Use the processed args here too
+            return sum(p.numel() for p in temp_setonet.parameters())
 
 
 class FunctionEncoder(torch.nn.Module):
@@ -35,7 +148,7 @@ class FunctionEncoder(torch.nn.Module):
                  model_type:Union[str, type]="MLP",
                  model_kwargs:dict=dict(),
                  representation_mode:str="least_squares",
-                 encoder_type:Union[str, type]="RepresentationEncoderDeepSets",
+                 encoder_type:Union[str, type]="SetONet",
                  encoder_kwargs:dict=dict(),
                  use_residuals_method:bool=False,  
                  regularization_parameter:float=1.0, # if you normalize your data, this is usually good
@@ -169,23 +282,28 @@ class FunctionEncoder(torch.nn.Module):
                        encoder_type:Union[str, type],
                        encoder_kwargs:dict) -> torch.nn.Module:
         """Builds the representation encoder model."""
-        if type(encoder_type) == str:
-            if encoder_type == "RepresentationEncoderDeepSets":
-                # Pass all relevant kwargs, including use_layer_norm if present
-                return RepresentationEncoderDeepSets(input_size=self.input_size,
-                                                     output_size=self.output_size,
-                                                     n_basis=self.n_basis,
-                                                     **encoder_kwargs)
-            else:
-                raise ValueError(f"Unknown encoder type: {encoder_type}")
-        elif issubclass(encoder_type, BaseArchitecture):
-             # Pass all relevant kwargs, including use_layer_norm if present
+        if encoder_type == "SetONet" or encoder_type == SetONet: # Handle string "SetONet" or SetONet class
+            return SetONetEncoderWrapper(input_size=self.input_size,
+                                         output_size=self.output_size,
+                                         n_basis=self.n_basis,
+                                         **encoder_kwargs)
+        # Handle if SetONetEncoderWrapper class itself is passed
+        elif isinstance(encoder_type, type) and encoder_type == SetONetEncoderWrapper:
+            return SetONetEncoderWrapper(input_size=self.input_size,
+                                         output_size=self.output_size,
+                                         n_basis=self.n_basis,
+                                         **encoder_kwargs)
+        elif isinstance(encoder_type, type) and issubclass(encoder_type, BaseArchitecture):
+             # Pass all relevant kwargs
              return encoder_type(input_size=self.input_size,
                                  output_size=self.output_size,
                                  n_basis=self.n_basis,
                                  **encoder_kwargs)
+        # Deprecated: RepresentationEncoderDeepSets specific string check removed
+        # else if type(encoder_type) == str and encoder_type == "RepresentationEncoderDeepSets":
+        #     return RepresentationEncoderDeepSets(...) 
         else:
-            raise ValueError(f"Invalid encoder_type: {encoder_type}. Must be a string or a BaseArchitecture subclass.")
+            raise ValueError(f"Invalid encoder_type: {encoder_type}. Must be 'SetONet', SetONet class, SetONetEncoderWrapper class, or a BaseArchitecture subclass.")
 
     def compute_representation(self, 
                                example_xs:torch.tensor, 
@@ -734,7 +852,7 @@ class FunctionEncoder(torch.nn.Module):
                              model_type:Union[str, type]="MLP",
                              model_kwargs:dict=dict(),
                              representation_mode:str = "least_squares",
-                             encoder_type:Union[str, type] = "RepresentationEncoderDeepSets",
+                             encoder_type:Union[str, type] = "SetONet",
                              encoder_kwargs:dict = dict(),
                              use_residuals_method: bool = False,
                              *args, **kwargs):
@@ -770,20 +888,23 @@ class FunctionEncoder(torch.nn.Module):
 
         # --- Parameters for Representation Encoder Model ---
         if representation_mode == "encoder_network":
-            # Extract the specific encoder class to call its static method
             EncoderClass = None
             if isinstance(encoder_type, str):
-                if encoder_type == "RepresentationEncoderDeepSets":
-                    EncoderClass = RepresentationEncoderDeepSets
+                if encoder_type == "SetONet": # Changed
+                    EncoderClass = SetONetEncoderWrapper
                 # Add other string-based encoder types here if needed
+            elif encoder_type == SetONetEncoderWrapper: # Added check for wrapper class
+                EncoderClass = SetONetEncoderWrapper
+            elif encoder_type == SetONet: # Added check for SetONet class itself
+                EncoderClass = SetONetEncoderWrapper # Will use the wrapper
             elif isinstance(encoder_type, type) and issubclass(encoder_type, BaseArchitecture):
                 EncoderClass = encoder_type
 
             if EncoderClass:
-                 # Pass all relevant encoder_kwargs, including 'use_layer_norm' if present
+                 # Pass FunctionEncoder's input_size, output_size, n_basis, and encoder_kwargs
                  n_params += EncoderClass.predict_number_params(input_size, output_size, n_basis, **encoder_kwargs)
             else:
-                 raise ValueError(f"Unknown or invalid encoder type: '{encoder_type}'")
+                 raise ValueError(f"Unknown or invalid encoder type for param prediction: '{encoder_type}'")
 
         return n_params
 

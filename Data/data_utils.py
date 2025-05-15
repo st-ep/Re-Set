@@ -22,6 +22,7 @@ def generate_batch(batch_size, n_trunk_points, sensor_x, scale, input_range, dev
         f_values (torch.Tensor): Function values at sensor_x locations. Shape: [batch_size, num_sensors]
         x_eval (torch.Tensor): Trunk evaluation points. Shape: [n_trunk_points, 1]
         y_target (torch.Tensor): True derivative values at x_eval points. Shape: [batch_size, n_trunk_points]
+        df_dx_sensors (torch.Tensor): True derivative values at sensor_x locations. Shape: [batch_size, num_sensors]
     """
     a = (torch.rand(batch_size, 1, device=device) * 2 - 1) * scale
     b = (torch.rand(batch_size, 1, device=device) * 2 - 1) * scale
@@ -39,4 +40,10 @@ def generate_batch(batch_size, n_trunk_points, sensor_x, scale, input_range, dev
     # True derivative values at x_eval points
     y_target = 3 * a * x_eval.T**2 + 2 * b * x_eval.T + c
     
-    return f_values, x_eval, y_target 
+    # True derivative values at sensor_x locations
+    # f'(x) = 3ax^2 + 2bx + c
+    # sensor_x has shape [num_sensors], a, b, c have shape [batch_size, 1]
+    # We want df_dx_sensors to have shape [batch_size, num_sensors]
+    df_dx_sensors = 3 * a * sensor_x**2 + 2 * b * sensor_x + c
+    
+    return f_values, x_eval, y_target, df_dx_sensors 

@@ -55,8 +55,34 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
         xs_son_plot = sensor_x.to(model_device).view(1, sensor_x.shape[0], 1)
         us_son_plot = f_sensor.to(model_device).view(1, sensor_x.shape[0], 1)
         ys_son_plot = x_dense.to(model_device).view(1, x_dense.shape[0], 1) # x_dense is already [N,1]
+        
+        us_derivs_son_plot_arg = None
+        # Check the flag on the model instance and if the attribute exists
+        if hasattr(setonet_model, 'concat_sensor_derivative_to_branch_input') and \
+           setonet_model.concat_sensor_derivative_to_branch_input:
+            # Calculate derivative of the test function at sensor_x locations
+            # Coefficients a, b, c were scalars. Convert them to tensors on the model_device.
+            # sensor_x should also be on model_device for this calculation.
+            a_coeff_dev = torch.tensor(a, device=model_device).view(1, 1)
+            b_coeff_dev = torch.tensor(b, device=model_device).view(1, 1)
+            c_coeff_dev = torch.tensor(c, device=model_device).view(1, 1)
+            
+            # Use sensor_x directly (it's already on device or will be moved by xs_son_plot)
+            # For clarity, ensure sensor_x_for_deriv is on model_device
+            sensor_x_for_deriv = sensor_x.to(model_device)
+
+            # df/dx = 3ax^2 + 2bx + c
+            # sensor_x_for_deriv has shape [num_sensors]
+            # a_coeff_dev, b_coeff_dev, c_coeff_dev have shape [1, 1] for broadcasting
+            df_u_test_at_sensors = 3 * a_coeff_dev * sensor_x_for_deriv**2 + \
+                                   2 * b_coeff_dev * sensor_x_for_deriv + \
+                                   c_coeff_dev 
+            # df_u_test_at_sensors will have shape [1, num_sensors] after broadcasting
+            us_derivs_son_plot_arg = df_u_test_at_sensors.view(1, -1, 1) # Reshape to [1, num_sensors, 1]
+
         with torch.no_grad():
-            df_pred = setonet_model(xs_son_plot, us_son_plot, ys_son_plot).squeeze().detach().cpu()
+            # Pass us_derivs_son_plot_arg to the model call
+            df_pred = setonet_model(xs_son_plot, us_son_plot, ys_son_plot, us_derivs=us_derivs_son_plot_arg).squeeze().detach().cpu()
         pred_label = "Predicted df/dx (SetONet)"
         pred_color = 'orange'
     
