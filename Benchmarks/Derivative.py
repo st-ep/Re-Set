@@ -26,7 +26,7 @@ parser.add_argument('--model_to_run', type=str, default='setonet', choices=['dee
                     help='Which model to run: "deeponet" or "setonet".')
 
 # DeepONet arguments
-parser.add_argument('--don_lr', type=float, default=5e-4, help='Learning rate for DeepONet')
+parser.add_argument('--don_lr', type=float, default=1e-3, help='Learning rate for DeepONet')
 parser.add_argument('--don_epochs', type=int, default=500, help='Number of epochs for DeepONet')
 parser.add_argument('--don_branch_hidden', nargs='+', type=int, default=[256, 256], help='Hidden layer sizes for DeepONet branch net')
 parser.add_argument('--don_trunk_hidden', nargs='+', type=int, default=[256, 256], help='Hidden layer sizes for DeepONet trunk net')
@@ -41,17 +41,18 @@ parser.add_argument('--son_p_dim', type=int, default=16, help='Latent dimension 
 parser.add_argument('--son_phi_hidden', type=int, default=256, help='Hidden size for SetONet phi network')
 parser.add_argument('--son_rho_hidden', type=int, default=256, help='Hidden size for SetONet rho network')
 parser.add_argument('--son_trunk_hidden', type=int, default=256, help='Hidden size for SetONet trunk network')
-parser.add_argument('--son_n_trunk_layers', type=int, default=6, help='Number of layers in SetONet trunk network')
+parser.add_argument('--son_n_trunk_layers', type=int, default=4, help='Number of layers in SetONet trunk network')
 parser.add_argument('--son_phi_output_size', type=int, default=16, help='Output size of SetONet phi network before aggregation')
 parser.add_argument('--son_aggregation', type=str, default="mean", choices=["mean", "attention"], help='Aggregation type for SetONet')
-parser.add_argument('--son_lr', type=float, default=5e-4, help='Learning rate for SetONet')
-parser.add_argument('--son_epochs', type=int, default=200000, help='Number of epochs for SetONet')
+parser.add_argument('--son_lr', type=float, default=1e-3, help='Learning rate for SetONet')
+parser.add_argument('--son_epochs', type=int, default=100000, help='Number of epochs for SetONet')
 parser.add_argument('--pos_encoding_type', type=str, default='skip', choices=['sinusoidal', 'skip'], help='Positional encoding type for SetONet')
 parser.add_argument('--son_concat_sensor_derivative_to_branch', action='store_true',
                     help='For SetONet, concatenate derivative values at sensor locations to the branch input.')
+parser.add_argument('--son_n_rho_layers', type=int, default=2, help='Number of layers in SetONet rho network')
 parser.add_argument('--son_ortho_check_interval', type=int, default=500,
                     help='Epoch interval to check SetONet trunk orthogonality. 0 means only at the end. <0 means never.')
-parser.add_argument('--son_lr_schedule_steps', type=int, nargs='+', default=[30000, 600000, 1500000, 2000000, 2500000],
+parser.add_argument('--son_lr_schedule_steps', type=int, nargs='+', default=[30000, 60000, 1500000, 2000000, 2500000],
                     help='Epoch milestones for SetONet LR decay.')
 parser.add_argument('--son_lr_schedule_gammas', type=float, nargs='+', default=[0.2, 0.5, 0.2, 0.5, 0.2],
                     help='Multiplicative factors for SetONet LR decay at each milestone.')
@@ -89,7 +90,7 @@ np.random.seed(0)
 
 # Some hyperparameters for the problem
 input_range = [-1, 1]
-scale = 1
+scale = 0.1
 sensor_size = 1000
 
 # Sensor points (fixed for branch input)

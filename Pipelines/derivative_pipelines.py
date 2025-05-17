@@ -10,6 +10,31 @@ from Models.SetONet import SetONet
 from Data.data_utils import generate_batch
 from Models.utils.orthogonality_utils import calculate_setonet_trunk_orthogonality, plot_setonet_trunk_orthogonality
 
+# --- NEW: shared helpers ----------------------------------------------------
+from typing import Optional
+
+def compute_relative_l2(pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+    """
+    Mean relative L2 error  ‖pred-tgt‖₂ / ‖tgt‖₂  over the batch.
+    """
+    err   = torch.norm(pred - tgt, dim=1)
+    denom = torch.norm(tgt,  dim=1)
+    return (err / denom).mean()
+
+def _prepare_setonet_inputs(sensor_x: torch.Tensor,
+                            f_vals:  torch.Tensor,
+                            x_eval:  torch.Tensor,
+                            df_dx:   Optional[torch.Tensor] = None):
+    """
+    Broadcast & reshape tensors so they can be fed straight into SetONet.
+    """
+    bsz = f_vals.size(0)
+    xs  = sensor_x.view(1, -1, 1).expand(bsz, -1, -1)   # (B, n_sensors, 1)
+    us  = f_vals.unsqueeze(-1)                          # (B, n_sensors, 1)
+    ys  = x_eval.unsqueeze(0).expand(bsz, -1, -1)       # (B, n_trunk,   1)
+    us_d = df_dx.unsqueeze(-1) if df_dx is not None else None
+    return xs, us, ys, us_d
+
 def run_deeponet_pipeline(args, device, sensor_x, loss_fn, log_dir, input_range, scale):
     print("\n--- Initializing and Training DeepONet ---")
     # Define DeepONet
@@ -32,7 +57,6 @@ def run_deeponet_pipeline(args, device, sensor_x, loss_fn, log_dir, input_range,
     for epoch in range(args.don_epochs):
         model.train()
         # For DeepONet, generate_batch is expected to return 3 items: branch_input, trunk_input, target
-        # If generate_batch is modified to return 4 for SetONet, ensure it's handled or a specific version is called.
         data_from_generator = generate_batch(
             batch_size=64, 
             n_trunk_points=40, 
@@ -72,9 +96,7 @@ def run_deeponet_pipeline(args, device, sensor_x, loss_fn, log_dir, input_range,
         branch_input_test, trunk_input_test, y_true_test = data_from_generator_test[:3]
 
         y_pred_test = model(branch_input_test, trunk_input_test)
-        error = torch.norm(y_pred_test - y_true_test, dim=1)
-        denom = torch.norm(y_true_test, dim=1)
-        rel_error = (error / denom).mean()
+        rel_error = compute_relative_l2(y_pred_test, y_true_test)
         print(f"\nDeepONet: Average L2 Relative Error over {n_test} test examples: {rel_error:.6f}")
 
     deeponet_model_path = os.path.join(log_dir, "deeponet_model.pth")
@@ -100,6 +122,7 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
         pos_encoding_type=args.pos_encoding_type,
         aggregation_type=args.son_aggregation,
         concat_sensor_derivative_to_branch_input=args.son_concat_sensor_derivative_to_branch,
+        n_rho_layers=args.son_n_rho_layers,
         initial_lr=args.son_lr,
         lr_schedule_steps=None,
         lr_schedule_gammas=None
@@ -107,12 +130,15 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
 
     optimizer_son = optim.Adam(setonet_model.parameters(), lr=args.son_lr)
 
-    # LR Scheduler for SetONet
+    # LR Scheduler for SetONet (external loop)
     if args.son_lr_schedule_steps and args.son_lr_schedule_gammas:
-        son_lambda_func = lambda epoch: np.prod([gamma for i, gamma in enumerate(args.son_lr_schedule_gammas) if epoch >= args.son_lr_schedule_steps[i]]) \
-                                       if args.son_lr_schedule_steps else 1.0
+        # This lambda function needs to be based on the current epoch/step of the *external* loop
+        son_lambda_func = lambda current_external_epoch: np.prod([
+            gamma for i, gamma in enumerate(args.son_lr_schedule_gammas)
+            if current_external_epoch >= args.son_lr_schedule_steps[i]
+        ]) if args.son_lr_schedule_steps else 1.0
         scheduler_son = torch.optim.lr_scheduler.LambdaLR(optimizer_son, lr_lambda=son_lambda_func)
-        print(f"Using LambdaLR scheduler for SetONet with steps {args.son_lr_schedule_steps} and gammas {args.son_lr_schedule_gammas}")
+        print(f"Using LambdaLR scheduler for SetONet external loop with steps {args.son_lr_schedule_steps} and gammas {args.son_lr_schedule_gammas}")
     else:
         scheduler_son = None
 
@@ -146,12 +172,10 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
         else:
             raise ValueError(f"generate_batch returned {len(data_from_generator)} items.")
 
-        current_batch_size = batch_f_values.shape[0]
-        
-        xs_setonet = sensor_x.view(1, sensor_x.shape[0], 1).expand(current_batch_size, -1, -1)
-        us_setonet = batch_f_values.unsqueeze(-1)
-        ys_setonet = batch_x_eval.unsqueeze(0).expand(current_batch_size, -1, -1)
-        us_derivs_setonet_arg = batch_df_dx_sensors.unsqueeze(-1) if args.son_concat_sensor_derivative_to_branch and batch_df_dx_sensors is not None else None
+        xs_setonet, us_setonet, ys_setonet, us_derivs_setonet_arg = _prepare_setonet_inputs(
+            sensor_x, batch_f_values, batch_x_eval,
+            df_dx=batch_df_dx_sensors if args.son_concat_sensor_derivative_to_branch else None
+        )
         
         pred_setonet = setonet_model(xs_setonet, us_setonet, ys_setonet, us_derivs=us_derivs_setonet_arg)
         target_setonet = batch_y_target.unsqueeze(-1)
@@ -177,11 +201,10 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
             writer_setonet.add_scalar('Metrics/MSE', mse, epoch)
             
             # Calculate and log relative L2 error for current batch
-            with torch.no_grad():
-                error = torch.norm(pred_setonet.squeeze(-1) - target_setonet.squeeze(-1), dim=1)
-                denom = torch.norm(target_setonet.squeeze(-1), dim=1)
-                rel_error = (error / denom).mean().item()
-                writer_setonet.add_scalar('Metrics/Relative_L2_Error', rel_error, epoch)
+            rel_error = compute_relative_l2(
+                pred_setonet.squeeze(-1), target_setonet.squeeze(-1)
+            ).item()
+            writer_setonet.add_scalar('Metrics/Relative_L2_Error', rel_error, epoch)
 
         # Evaluate on a validation set every eval_interval epochs
         if epoch % 500 == 0 or epoch == args.son_epochs - 1:
@@ -198,17 +221,15 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
                 
                 if len(val_data) == 4:
                     val_f_values, val_x_eval, val_y_true, val_df_dx_sensors = val_data
-                    val_derivs_arg = val_df_dx_sensors.unsqueeze(-1) if args.son_concat_sensor_derivative_to_branch else None
                 else:
                     val_f_values, val_x_eval, val_y_true = val_data
-                    val_derivs_arg = None
+                    val_df_dx_sensors = None
                 
-                val_batch_size = val_f_values.shape[0]
-                val_xs = sensor_x.view(1, sensor_x.shape[0], 1).expand(val_batch_size, -1, -1)
-                val_us = val_f_values.unsqueeze(-1)
-                val_ys = val_x_eval.unsqueeze(0).expand(val_batch_size, -1, -1)
-                
-                val_pred = setonet_model(val_xs, val_us, val_ys, us_derivs=val_derivs_arg)
+                val_xs, val_us, val_ys, val_us_derivs = _prepare_setonet_inputs(
+                    sensor_x, val_f_values, val_x_eval,
+                    df_dx=val_df_dx_sensors if args.son_concat_sensor_derivative_to_branch else None
+                )
+                val_pred = setonet_model(val_xs, val_us, val_ys, us_derivs=val_us_derivs)
                 
                 # Calculate validation MSE
                 val_target = val_y_true.unsqueeze(-1)
@@ -216,9 +237,7 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
                 writer_setonet.add_scalar('Validation/MSE', val_mse, epoch)
                 
                 # Calculate validation relative L2 error
-                val_error = torch.norm(val_pred.squeeze(-1) - val_y_true, dim=1)
-                val_denom = torch.norm(val_y_true, dim=1)
-                val_rel_error = (val_error / val_denom).mean().item()
+                val_rel_error = compute_relative_l2(val_pred.squeeze(-1), val_y_true).item()
                 writer_setonet.add_scalar('Validation/Relative_L2_Error', val_rel_error, epoch)
             
             setonet_model.train()
@@ -260,17 +279,12 @@ def run_setonet_pipeline(args, device, sensor_x, x_basis_plot, loss_fn, log_dir,
         else:
             raise ValueError(f"generate_batch returned {len(test_data_from_generator)} items for eval.")
 
-        current_test_batch_size = f_values_test.shape[0]
-        xs_setonet_test = sensor_x.view(1, sensor_x.shape[0], 1).expand(current_test_batch_size, -1, -1)
-        us_setonet_test = f_values_test.unsqueeze(-1)
-        ys_setonet_test = x_eval_test.unsqueeze(0).expand(current_test_batch_size, -1, -1)
-        us_derivs_setonet_test_arg = df_dx_sensors_test_eval.unsqueeze(-1) if args.son_concat_sensor_derivative_to_branch and df_dx_sensors_test_eval is not None else None
-
-        y_pred_setonet = setonet_model(xs_setonet_test, us_setonet_test, ys_setonet_test, us_derivs=us_derivs_setonet_test_arg)
-        y_true_setonet_reshaped = y_true_test.unsqueeze(-1)
-        error_setonet = torch.norm(y_pred_setonet.squeeze(-1) - y_true_test, dim=1)
-        denom_setonet = torch.norm(y_true_test, dim=1)
-        rel_error_setonet = (error_setonet / denom_setonet).mean()
+        xs_setonet_test, us_setonet_test, ys_setonet_test, us_derivs_test = _prepare_setonet_inputs(
+            sensor_x, f_values_test, x_eval_test,
+            df_dx=df_dx_sensors_test_eval if args.son_concat_sensor_derivative_to_branch else None
+        )
+        y_pred_setonet = setonet_model(xs_setonet_test, us_setonet_test, ys_setonet_test, us_derivs=us_derivs_test)
+        rel_error_setonet = compute_relative_l2(y_pred_setonet.squeeze(-1), y_true_test).item()
         print(f"SetONet: Average L2 Relative Error over {n_test} test examples: {rel_error_setonet:.6f}")
 
     setonet_model_path = os.path.join(log_dir, "setonet_model.pth")

@@ -35,13 +35,7 @@ class DeepONet(nn.Module):
         
         # Handle different trunk_input shapes
         if trunk_input.ndim == 2: # Shape [T, trunk_feature_dim]
-            # This is the typical case if trunk_input is shared across the batch
-            # or if batch_size is 1 and trunk_input is [T, trunk_feature_dim]
             t = self.trunk_net(trunk_input)    # Output shape: [T, p]
-            # We need to perform a batched dot product or element-wise product sum.
-            # If b is [B, p] and t is [T, p], we want an output [B, T].
-            # This requires t to be [p, T] for matmul, or careful broadcasting.
-            # For (b_i * t_j).sum(), we can do b @ t.T
             out = torch.matmul(b, t.T) # Output shape: [B, T]
         elif trunk_input.ndim == 3: # Shape [B, T, trunk_feature_dim]
             # This case handles per-batch-item trunk inputs.

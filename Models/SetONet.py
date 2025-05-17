@@ -27,11 +27,12 @@ class SetONet(torch.nn.Module):
                  use_positional_encoding=True, # Flag to enable/disable positional encoding
                  pos_encoding_dim=64, # Dimension for sinusoidal positional encoding
                  pos_encoding_type='skip', # Type: 'sinusoidal', or 'skip'
-                 pos_encoding_max_freq=100.0, # Max frequency/scale for sinusoidal encoding
+                 pos_encoding_max_freq=0.01, # Max frequency/scale for sinusoidal encoding
                  encoding_strategy='concatenate', # Strategy for combining positional and sensor features. Only 'concatenate' is supported.
                  aggregation_type: str = "mean",  # 'mean' or 'attention'
                  attention_n_tokens: int = 1,     # k – number of learnable query tokens
-                 concat_sensor_derivative_to_branch_input: bool = False # New parameter
+                 concat_sensor_derivative_to_branch_input: bool = False, # New parameter
+                 n_rho_layers: int = 1 # Number of layers in the rho network (Default)
                  ):
         super().__init__()
 
@@ -54,6 +55,7 @@ class SetONet(torch.nn.Module):
         self.rho_hidden_size = rho_hidden_size
         self.trunk_hidden_size = trunk_hidden_size
         self.n_trunk_layers = n_trunk_layers
+        self.n_rho_layers = n_rho_layers # Store n_rho_layers
 
         # ---------------------------------------------------------------------
         # Aggregation choice ('mean' | 'attention')
@@ -423,6 +425,7 @@ class SetONet(torch.nn.Module):
         params["rho_hidden_size"] = self.rho_hidden_size
         params["trunk_hidden_size"] = self.trunk_hidden_size
         params["n_trunk_layers"] = self.n_trunk_layers
+        params["n_rho_layers"] = self.n_rho_layers # Add n_rho_layers to params
         # params["activation_fn"] = self.phi[1].__class__.__name__ # Get activation class name
         params["use_deeponet_bias"] = self.bias is not None
         # Add LR schedule params if defined

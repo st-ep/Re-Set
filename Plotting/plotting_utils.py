@@ -7,6 +7,7 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
     Plots the results for DeepONet or SetONet in mapping a single cubic polynomial
     to its derivative, showing input and output side-by-side.
     Saves the plot to the specified log directory.
+    Handles normalization internally for SetONet if input_range is provided.
     """
     model_name = ""
 
@@ -18,7 +19,7 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
         print("No model provided to plot_derivative_comparison. Skipping plot.")
         return
 
-    fig, axs = plt.subplots(1, 2, figsize=(12, 5), squeeze=False) # 1 row, 2 columns
+    fig, ax_deriv = plt.subplots(figsize=(8, 5))                  # single subplot
 
     # Generate one random cubic coefficient example
     a = torch.randn(1).item() * scale
@@ -26,7 +27,7 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
     c = torch.randn(1).item() * scale
     d = torch.randn(1).item() * scale
 
-    # Compute input (function values at sensor points and dense points)
+    # Compute input f(x)  and its derivative (on original scale)
     # Ensure sensor_x and x_dense are on the CPU for numpy operations if they come from GPU
     sensor_x_cpu = sensor_x.cpu()
     x_dense_cpu = x_dense.cpu().squeeze() # Squeeze for 1D array if it's [N,1]
@@ -52,54 +53,52 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
     elif setonet_model:
         # Ensure inputs to model are on the correct device
         model_device = next(setonet_model.parameters()).device
-        xs_son_plot = sensor_x.to(model_device).view(1, sensor_x.shape[0], 1)
-        us_son_plot = f_sensor.to(model_device).view(1, sensor_x.shape[0], 1)
-        ys_son_plot = x_dense.to(model_device).view(1, x_dense.shape[0], 1) # x_dense is already [N,1]
-        
-        us_derivs_son_plot_arg = None
-        # Check the flag on the model instance and if the attribute exists
-        if hasattr(setonet_model, 'concat_sensor_derivative_to_branch_input') and \
-           setonet_model.concat_sensor_derivative_to_branch_input:
-            # Calculate derivative of the test function at sensor_x locations
-            # Coefficients a, b, c were scalars. Convert them to tensors on the model_device.
-            # sensor_x should also be on model_device for this calculation.
-            a_coeff_dev = torch.tensor(a, device=model_device).view(1, 1)
-            b_coeff_dev = torch.tensor(b, device=model_device).view(1, 1)
-            c_coeff_dev = torch.tensor(c, device=model_device).view(1, 1)
-            
-            # Use sensor_x directly (it's already on device or will be moved by xs_son_plot)
-            # For clarity, ensure sensor_x_for_deriv is on model_device
-            sensor_x_for_deriv = sensor_x.to(model_device)
 
-            # df/dx = 3ax^2 + 2bx + c
-            # sensor_x_for_deriv has shape [num_sensors]
-            # a_coeff_dev, b_coeff_dev, c_coeff_dev have shape [1, 1] for broadcasting
-            df_u_test_at_sensors = 3 * a_coeff_dev * sensor_x_for_deriv**2 + \
-                                   2 * b_coeff_dev * sensor_x_for_deriv + \
-                                   c_coeff_dev 
-            # df_u_test_at_sensors will have shape [1, num_sensors] after broadcasting
-            us_derivs_son_plot_arg = df_u_test_at_sensors.view(1, -1, 1) # Reshape to [1, num_sensors, 1]
+        # Original sensor locations and derivative values for this plot example
+        sensor_x_plot_orig_cpu = sensor_x.cpu() # Ensure it's CPU for consistency before moving
+        df_sensor_plot_orig_cpu = (3 * a * sensor_x_plot_orig_cpu**2 + 2 * b * sensor_x_plot_orig_cpu + c)
+        
+        # Original dense x locations for trunk input
+        x_dense_plot_orig_cpu = x_dense.cpu() # Ensure it's CPU
+
+        # --- Normalize for SetONet input ---
+        # 1. Normalize coordinates to [-1, 1]
+        min_val, max_val = input_range
+        sensor_x_plot_norm = 2 * (sensor_x_plot_orig_cpu.to(model_device) - min_val) / (max_val - min_val) - 1
+        x_dense_plot_norm  = 2 * (x_dense_plot_orig_cpu.to(model_device) - min_val) / (max_val - min_val) - 1
+
+        # 2. Standardize function values using statistics from df_true (the target for this plot)
+        # df_true is already computed and is on CPU. Move to model_device for calculations if needed,
+        # or keep stats on CPU if df_sensor_plot_orig_cpu is also on CPU before normalization.
+        # For consistency, let's calculate stats from df_true (which is on CPU)
+        # and apply to df_sensor_plot_orig_cpu (also on CPU) before moving to device.
+        
+        target_mean_plot = df_true.mean(dim=0, keepdim=True) # df_true is 1D
+        target_std_plot  = df_true.std(dim=0, keepdim=True) + 1e-8
+        
+        # Normalize the sensor derivative values using target's statistics
+        df_sensor_plot_norm_vals = (df_sensor_plot_orig_cpu - target_mean_plot) / target_std_plot
+        
+        xs_son_plot = sensor_x_plot_norm.view(1, -1, 1) # Already on model_device
+        us_son_plot = df_sensor_plot_norm_vals.to(model_device).view(1, -1, 1)
+        ys_son_plot = x_dense_plot_norm.view(1, -1, 1) # Already on model_device
+        
+        us_derivs_son_plot_arg = None # Assuming concat_sensor_derivative_to_branch_input is false
 
         with torch.no_grad():
-            # Pass us_derivs_son_plot_arg to the model call
-            df_pred = setonet_model(xs_son_plot, us_son_plot, ys_son_plot, us_derivs=us_derivs_son_plot_arg).squeeze().detach().cpu()
+            # Model expects inputs on its device
+            pred_norm = setonet_model(xs_son_plot, us_son_plot, ys_son_plot, us_derivs=us_derivs_son_plot_arg).squeeze(0).squeeze(-1) 
+        
+        # De-normalize the prediction using target's statistics
+        # pred_norm is on model_device, target_mean_plot/target_std_plot are on CPU. Move for calculation.
+        df_pred = pred_norm * target_std_plot.to(model_device) + target_mean_plot.to(model_device)
+        df_pred = df_pred.detach().cpu()
+        # --- End Normalization Handling ---
+        
         pred_label = "Predicted df/dx (SetONet)"
         pred_color = 'orange'
     
-    # Subplot 1: Input Cubic Function
-    ax_input = axs[0, 0]
-    ax_input.plot(x_dense_cpu, f_dense, label="Input f(x)", linestyle='-')
-    # Plot only every 100th sensor point for visualization
-    sensor_x_viz = sensor_x_cpu[::100]
-    f_sensor_viz = f_sensor[::100]
-    ax_input.scatter(sensor_x_viz, f_sensor_viz, color="red", label="Sensor values (subset)", s=25, alpha=0.9, zorder=5)
-    ax_input.set_xlabel("x")
-    ax_input.set_ylabel("f(x)")
-    ax_input.legend()
-    ax_input.grid(True, linestyle='--', alpha=0.7)
-
-    # Subplot 2: Derivative Prediction
-    ax_deriv = axs[0, 1]
+    # ------------------ Derivative plot --------------------------------
     ax_deriv.plot(x_dense_cpu, df_true, label="True df/dx", color='green', linestyle='-')
     if df_pred is not None:
         ax_deriv.plot(x_dense_cpu, df_pred, label=pred_label, color=pred_color, linestyle='--')
@@ -108,7 +107,7 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
     ax_deriv.legend()
     ax_deriv.grid(True, linestyle='--', alpha=0.7)
     
-    plt.tight_layout(rect=[0, 0, 1, 0.93]) # Adjust layout to make space for suptitle
+    plt.tight_layout()
     plot_filename = os.path.join(log_dir, f"{model_name.lower()}_derivative_example_plot.png")
     plt.savefig(plot_filename)
     print(f"{model_name} derivative example plot saved to {plot_filename}")
