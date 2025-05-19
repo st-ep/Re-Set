@@ -7,12 +7,53 @@ import os
 import numpy as np
 import matplotlib.gridspec as gridspec
 
-from Data.data_utils import generate_batch
+from Data.data_utils import generate_batch, generate_batch_sin, generate_batch_cool_basis
 from Models.SetONet import SetONet # For type hinting
 from Models.utils.orthogonality_utils import plot_setonet_trunk_orthogonality
 from Benchmarks.benchmark_utils import normalize_coordinates, normalize_values, denormalize_values
 # plot_derivative_comparison is no longer imported as its functionality for individual plots
 # will be handled by _plot_single_sample_approximation.
+
+# --- Helper function to plot Gramian Matrix ---
+def plot_trunk_gramian_heatmap(
+    gramian_matrix: torch.Tensor, # Should be a CPU tensor
+    log_dir: str,
+    epoch: int,
+    p_dim: int,
+    task_type: str
+):
+    """
+    Plots and saves a heatmap of the trunk basis Gramian matrix.
+    """
+    if gramian_matrix is None or gramian_matrix.shape[0] != p_dim or gramian_matrix.shape[1] != p_dim:
+        print(f"Warning: Invalid Gramian matrix for epoch {epoch}. Skipping heatmap plot.")
+        return
+
+    plt.figure(figsize=(8, 6))
+    plt.imshow(gramian_matrix.numpy(), cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
+    plt.colorbar(label='Inner product value')
+    plt.title(f"Trunk Basis Gramian Matrix (Epoch {epoch})\nTask: {task_type.replace('_', ' ').title()}, p={p_dim}")
+    plt.xlabel("Basis function index")
+    plt.ylabel("Basis function index")
+    
+    # Add text annotations for values if p_dim is small enough
+    if p_dim <= 10: # Arbitrary threshold for readability
+        for i in range(p_dim):
+            for j in range(p_dim):
+                text_color = "white" if gramian_matrix[i, j] < 0.5 else "black"
+                plt.text(j, i, f"{gramian_matrix[i, j]:.2f}",
+                         ha="center", va="center", color=text_color, fontsize=8)
+
+    plt.tight_layout()
+    plot_filename = f"trunk_gramian_matrix_epoch_{epoch}_{task_type}.png"
+    plot_path = os.path.join(log_dir, plot_filename)
+    try:
+        plt.savefig(plot_path)
+        print(f"Trunk Gramian matrix heatmap saved to {plot_path}")
+    except Exception as e:
+        print(f"Error saving trunk Gramian matrix heatmap: {e}")
+    plt.close()
+
 
 # --- Standardized Single Sample Plot Helper ---
 def _plot_single_sample_approximation(
@@ -157,7 +198,7 @@ def generate_plots_1d(
     model: SetONet,
     device: torch.device,
     log_dir: str,
-    task_type: str, # "input_function" or "output_derivative"
+    task_type: str, # "input_function", "output_derivative", "input_function_sin", or "input_function_cool_basis"
     ortho_epochs: list,
     ortho_scores: list,
     latent_p: int,
@@ -237,6 +278,36 @@ def generate_plots_1d(
             sensor_target_values_cpu = f_sens_orig_sample.squeeze(0).cpu()
             
             if i == 0: # Store data for combined plot (Sample 0 of input_function task)
+                data_for_combined_plot['x_dense_orig_plot_sample0'] = current_x_dense_cpu.squeeze()
+                data_for_combined_plot['true_values_plot_sample0'] = true_target_values_cpu
+                data_for_combined_plot['true_sens_values_branch_sample0'] = sensor_target_values_cpu
+        
+        elif task_type == "input_function_sin":
+            f_sens_orig_sample, x_eval_orig_sample, f_eval_orig_sample = generate_batch_sin(
+                batch_size=1, n_trunk_points=n_trunk_points_plot,
+                sensor_x=sensor_x_orig.to(device), scale=scale,
+                input_range=input_range, device=device
+            )
+            current_x_dense_cpu = x_eval_orig_sample.squeeze(0).cpu()
+            true_target_values_cpu = f_eval_orig_sample.squeeze(0).cpu()
+            sensor_target_values_cpu = f_sens_orig_sample.squeeze(0).cpu()
+
+            if i == 0: # Store data for combined plot (Sample 0 of input_function_sin task)
+                data_for_combined_plot['x_dense_orig_plot_sample0'] = current_x_dense_cpu.squeeze()
+                data_for_combined_plot['true_values_plot_sample0'] = true_target_values_cpu
+                data_for_combined_plot['true_sens_values_branch_sample0'] = sensor_target_values_cpu
+
+        elif task_type == "input_function_cool_basis":
+            f_sens_orig_sample, x_eval_orig_sample, f_eval_orig_sample = generate_batch_cool_basis(
+                batch_size=1, n_trunk_points=n_trunk_points_plot,
+                sensor_x=sensor_x_orig.to(device), scale=scale,
+                input_range=input_range, device=device
+            )
+            current_x_dense_cpu = x_eval_orig_sample.squeeze(0).cpu()
+            true_target_values_cpu = f_eval_orig_sample.squeeze(0).cpu()
+            sensor_target_values_cpu = f_sens_orig_sample.squeeze(0).cpu()
+
+            if i == 0: # Store data for combined plot (Sample 0 of input_function_cool_basis task)
                 data_for_combined_plot['x_dense_orig_plot_sample0'] = current_x_dense_cpu.squeeze()
                 data_for_combined_plot['true_values_plot_sample0'] = true_target_values_cpu
                 data_for_combined_plot['true_sens_values_branch_sample0'] = sensor_target_values_cpu

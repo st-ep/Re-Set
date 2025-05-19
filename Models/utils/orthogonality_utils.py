@@ -6,9 +6,10 @@ def calculate_setonet_trunk_orthogonality(model, x_basis, p_dim, device):
     """
     Calculates an orthogonality metric for the SetONet trunk basis functions.
     Metric: Frobenius norm of (Gramian(normalized_basis) - Identity). Lower is better.
+    Returns the orthogonality error and the Gramian matrix.
     """
     if not hasattr(model, 'trunk') or p_dim <= 0:
-        return None
+        return None, None
 
     model.eval() # Ensure model is in eval mode for this calculation
     with torch.no_grad():
@@ -22,7 +23,7 @@ def calculate_setonet_trunk_orthogonality(model, x_basis, p_dim, device):
 
         if basis_on_x.shape[1] != p_dim:
             print(f"Warning: Trunk output dimension {basis_on_x.shape[1]} does not match p_dim {p_dim}. Skipping orthogonality check.")
-            return None
+            return None, None
 
         # Normalize each basis function (column)
         normalized_basis = torch.zeros_like(basis_on_x)
@@ -42,7 +43,7 @@ def calculate_setonet_trunk_orthogonality(model, x_basis, p_dim, device):
         identity = torch.eye(p_dim, device=device)
         ortho_error = torch.norm(gramian - identity, p='fro')
         
-        return ortho_error.item()
+        return ortho_error.item(), gramian.cpu()
 
 def plot_setonet_trunk_orthogonality(
     epochs: list,

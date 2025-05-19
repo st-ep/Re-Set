@@ -24,7 +24,7 @@ from tqdm import trange
 
 # ─── Project imports ──────────────────────────────────────────────────────────
 from Models.SetONet import SetONet
-from Data.data_utils import generate_batch
+from Data.data_utils import generate_batch, generate_batch_sin, generate_batch_cool_basis
 from Benchmarks.benchmark_utils import (                 # already contains helpers
     relative_L2, normalize_coordinates,
     normalize_values, denormalize_values,
@@ -33,7 +33,7 @@ from Models.utils.orthogonality_utils import (
     calculate_setonet_trunk_orthogonality,
 )
 # Import the new unified plotting function
-from Plotting.plots_1d import generate_plots_1d
+from Plotting.plots_1d import generate_plots_1d, plot_trunk_gramian_heatmap
 
 # -----------------------------------------------------------------------------
 
@@ -134,23 +134,44 @@ def run_setonet_benchmark(cfg_dict: Dict) -> None:
 
     for epoch in bar:
         # 1) ── Data generation (same generator, different slicing) ------------
-        batch = generate_batch(
-            batch_size     = cfg.batch_size,
-            n_trunk_points = cfg.n_trunk_points,
-            sensor_x       = sensor_x,
-            scale          = cfg.scale,
-            input_range    = cfg.input_range,
-            device         = device,
-        )
+        if cfg.task_type == "input_function_sin":
+            # generate_batch_sin returns: f_values_at_sensors, x_eval, f_values_at_x_eval
+            branch_orig, x_eval_orig, y_true_orig = generate_batch_sin(
+                batch_size     = cfg.batch_size,
+                n_trunk_points = cfg.n_trunk_points,
+                sensor_x       = sensor_x,
+                scale          = cfg.scale,
+                input_range    = cfg.input_range,
+                device         = device,
+            )
+        elif cfg.task_type == "input_function_cool_basis":
+            # generate_batch_cool_basis returns: f_values_at_sensors, x_eval, f_values_at_x_eval
+            branch_orig, x_eval_orig, y_true_orig = generate_batch_cool_basis(
+                batch_size     = cfg.batch_size,
+                n_trunk_points = cfg.n_trunk_points,
+                sensor_x       = sensor_x,
+                scale          = cfg.scale,
+                input_range    = cfg.input_range,
+                device         = device,
+            )
+        else: # Original tasks using generate_batch
+            batch = generate_batch(
+                batch_size     = cfg.batch_size,
+                n_trunk_points = cfg.n_trunk_points,
+                sensor_x       = sensor_x,
+                scale          = cfg.scale,
+                input_range    = cfg.input_range,
+                device         = device,
+            )
 
-        if cfg.task_type == "output_derivative":
-            # (_, x_eval, _, f′(x_eval), f′(sensor_x))
-            _, x_eval_orig, _, y_true_orig, branch_orig = batch
-        elif cfg.task_type == "input_function":
-            # (f(sensor_x), x_eval, f(x_eval), _, _)
-            branch_orig, x_eval_orig, y_true_orig, _, _ = batch
-        else:  # future-proof: raise an error for unsupported tasks
-            raise ValueError(f"Unknown task_type: {cfg.task_type}")
+            if cfg.task_type == "output_derivative":
+                # (_, x_eval, _, f′(x_eval), f′(sensor_x))
+                _, x_eval_orig, _, y_true_orig, branch_orig = batch
+            elif cfg.task_type == "input_function":
+                # (f(sensor_x), x_eval, f(x_eval), _, _)
+                branch_orig, x_eval_orig, y_true_orig, _, _ = batch
+            else:  # future-proof: raise an error for unsupported tasks
+                raise ValueError(f"Unknown task_type for data generation: {cfg.task_type}")
 
         # 2) ── Normalisation ---------------------------------------------------
         x_eval_norm   = normalize_coordinates(x_eval_orig, cfg.input_range)
@@ -198,31 +219,66 @@ def run_setonet_benchmark(cfg_dict: Dict) -> None:
 
         # ── Trunk orthogonality ------------------------------------------------
         if epoch % 500 == 0 or epoch == cfg.n_epochs - 1:
-            ortho = calculate_setonet_trunk_orthogonality(
+            ortho, gramian_matrix = calculate_setonet_trunk_orthogonality(
                 model, sensor_x_norm.unsqueeze(-1), cfg.latent_p, device
             )
             if ortho is not None:
                 ortho_epochs.append(epoch)
                 ortho_scores.append(ortho)
                 writer.add_scalar("Metrics/Trunk_Orthogonality", ortho, epoch)
+            
+            # Plot heatmap only at 10000 epochs and at the end
+            if gramian_matrix is not None and (epoch == 10000 or epoch == cfg.n_epochs - 1):
+                plot_trunk_gramian_heatmap(
+                    gramian_matrix=gramian_matrix, # Already on CPU from calculate_...
+                    log_dir=log_dir,
+                    epoch=epoch,
+                    p_dim=cfg.latent_p,
+                    task_type=cfg.task_type
+                )
 
     # ─── Simple test set -------------------------------------------------------
     model.eval()
     with torch.no_grad():
         n_test = 1000
-        batch  = generate_batch(
-            batch_size     = n_test,
-            n_trunk_points = cfg.n_trunk_points,
-            sensor_x       = sensor_x,
-            scale          = cfg.scale,
-            input_range    = cfg.input_range,
-            device         = device,
-        )
+        if cfg.task_type == "input_function_sin":
+            # generate_batch_sin returns: f_values_at_sensors, x_eval, f_values_at_x_eval
+            branch_orig, x_eval_orig, y_true_orig = generate_batch_sin(
+                batch_size     = n_test,
+                n_trunk_points = cfg.n_trunk_points,
+                sensor_x       = sensor_x,
+                scale          = cfg.scale,
+                input_range    = cfg.input_range,
+                device         = device,
+            )
+        elif cfg.task_type == "input_function_cool_basis":
+            # generate_batch_cool_basis returns: f_values_at_sensors, x_eval, f_values_at_x_eval
+            branch_orig, x_eval_orig, y_true_orig = generate_batch_cool_basis(
+                batch_size     = n_test,
+                n_trunk_points = cfg.n_trunk_points,
+                sensor_x       = sensor_x,
+                scale          = cfg.scale,
+                input_range    = cfg.input_range,
+                device         = device,
+            )
+        else: # Original tasks using generate_batch
+            batch  = generate_batch(
+                batch_size     = n_test,
+                n_trunk_points = cfg.n_trunk_points,
+                sensor_x       = sensor_x,
+                scale          = cfg.scale,
+                input_range    = cfg.input_range,
+                device         = device,
+            )
 
-        if cfg.task_type == "output_derivative":
-            _, x_eval_orig, _, y_true_orig, branch_orig = batch
-        else:  # input_function
-            branch_orig, x_eval_orig, y_true_orig, _, _ = batch
+            if cfg.task_type == "output_derivative":
+                _, x_eval_orig, _, y_true_orig, branch_orig = batch
+            elif cfg.task_type == "input_function": 
+                branch_orig, x_eval_orig, y_true_orig, _, _ = batch
+            else:
+                # This case should ideally be caught by the check in the training loop,
+                # but as a safeguard for the test section:
+                raise ValueError(f"Unknown task_type for test data generation: {cfg.task_type}")
 
         x_eval_norm   = normalize_coordinates(x_eval_orig, cfg.input_range)
         target_mean   = y_true_orig.mean(dim=1, keepdim=True)
