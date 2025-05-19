@@ -2,7 +2,17 @@ import torch
 import matplotlib.pyplot as plt
 import os
 
-def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense, input_range, scale, log_dir):
+def plot_derivative_comparison(
+    deeponet_model,
+    setonet_model,
+    sensor_x,
+    x_dense,
+    input_range,
+    scale,
+    log_dir,
+    plot_idx: int = 0,
+    coeffs: tuple = None
+):
     """
     Plots the results for DeepONet or SetONet in mapping a single cubic polynomial
     to its derivative, showing input and output side-by-side.
@@ -21,11 +31,14 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
 
     fig, ax_deriv = plt.subplots(figsize=(8, 5))                  # single subplot
 
-    # Generate one random cubic coefficient example
-    a = torch.randn(1).item() * scale
-    b = torch.randn(1).item() * scale
-    c = torch.randn(1).item() * scale
-    d = torch.randn(1).item() * scale
+    # Generate one random cubic coefficient example if not provided
+    if coeffs:
+        a, b, c, d = coeffs
+    else:
+        a = torch.randn(1).item() * scale
+        b = torch.randn(1).item() * scale
+        c = torch.randn(1).item() * scale
+        d = torch.randn(1).item() * scale
 
     # Compute input f(x)  and its derivative (on original scale)
     # Ensure sensor_x and x_dense are on the CPU for numpy operations if they come from GPU
@@ -108,9 +121,9 @@ def plot_derivative_comparison(deeponet_model, setonet_model, sensor_x, x_dense,
     ax_deriv.grid(True, linestyle='--', alpha=0.7)
     
     plt.tight_layout()
-    plot_filename = os.path.join(log_dir, f"{model_name.lower()}_derivative_example_plot.png")
+    plot_filename = os.path.join(log_dir, f"{model_name.lower()}_derivative_example_plot_sample_{plot_idx}.png")
     plt.savefig(plot_filename)
-    print(f"{model_name} derivative example plot saved to {plot_filename}")
+    print(f"{model_name} derivative example plot for sample {plot_idx} saved to {plot_filename}")
     plt.close(fig) # Close the figure to free memory
 
 def plot_trunk_basis_functions(deeponet_model, setonet_model, x_basis, setonet_p_dim, log_dir):

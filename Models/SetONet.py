@@ -162,6 +162,8 @@ class SetONet(torch.nn.Module):
         self.method = "deepOSet"
         self.average_function = None
 
+        self.activation_fn = activation_fn
+
     def _sinusoidal_encoding(self, coords):
         """Applies fixed sinusoidal encoding to coordinates."""
         # coords shape: (batch_size, n_sensors, input_size_src)
@@ -426,7 +428,6 @@ class SetONet(torch.nn.Module):
         params["trunk_hidden_size"] = self.trunk_hidden_size
         params["n_trunk_layers"] = self.n_trunk_layers
         params["n_rho_layers"] = self.n_rho_layers # Add n_rho_layers to params
-        # params["activation_fn"] = self.phi[1].__class__.__name__ # Get activation class name
         params["use_deeponet_bias"] = self.bias is not None
         # Add LR schedule params if defined
         params["initial_lr"] = self.initial_lr
@@ -455,3 +456,31 @@ class SetONet(torch.nn.Module):
 
         params = {k: str(v) for k, v in params.items()}
         return params
+
+    def get_params(self) -> dict:
+        """
+        Returns a dictionary of the model's hyperparameters.
+        """
+        return {
+            "input_size_src": self.input_size_src,
+            "output_size_src": self.output_size_src,
+            "input_size_tgt": self.input_size_tgt,
+            "output_size_tgt": self.output_size_tgt,
+            "p_dim": self.p,
+            "phi_hidden_size": self.phi_hidden_size,
+            "rho_hidden_size": self.rho_hidden_size,
+            "trunk_hidden_size": self.trunk_hidden_size,
+            "n_trunk_layers": self.n_trunk_layers,
+            "activation_fn": self.activation_fn.__name__,
+            "use_deeponet_bias": self.bias is not None,
+            "phi_output_size": self.phi_output_size,
+            "pos_encoding_type": self.pos_encoding_type,
+            "pos_encoding_max_freq": self.pos_encoding_max_freq,
+            "encoding_strategy": self.encoding_strategy,
+            "aggregation_type": self.aggregation,
+            "attention_n_tokens": self.attention_n_tokens,
+            "concat_sensor_derivative_to_branch_input": self.concat_sensor_derivative_to_branch_input,
+            "initial_lr": self.initial_lr,
+            "lr_schedule_steps": self.lr_schedule_steps,
+            "lr_schedule_gammas": self.lr_schedule_gammas
+        }

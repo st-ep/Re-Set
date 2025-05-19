@@ -44,21 +44,30 @@ def calculate_setonet_trunk_orthogonality(model, x_basis, p_dim, device):
         
         return ortho_error.item()
 
-def plot_setonet_trunk_orthogonality(epochs, scores, log_dir):
+def plot_setonet_trunk_orthogonality(
+    epochs: list,
+    scores: list,
+    log_dir: str,
+    title: str = "SetONet Trunk Orthogonality"
+) -> None:
     """
-    Plots the SetONet trunk basis orthogonality error vs. epochs and saves it.
+    Plots the evolution of the SetONet trunk orthogonality score.
     """
-    if not scores or not epochs:
+    if not epochs or not scores:
         print("No orthogonality data to plot.")
         return
 
     plt.figure(figsize=(10, 6))
     plt.plot(epochs, scores, marker='o', linestyle='-')
     plt.xlabel("Epoch")
-    plt.ylabel("Trunk Orthogonality Error (Frobenius Norm)")
-    plt.title("SetONet Trunk Basis Orthogonality vs. Epochs")
+    plt.ylabel("Orthogonality Score (Frobenius Norm)")
+    plt.title(title)
     plt.grid(True)
-    ortho_plot_filename = os.path.join(log_dir, "setonet_trunk_orthogonality_plot.png")
-    plt.savefig(ortho_plot_filename)
-    plt.close()
-    print(f"SetONet trunk orthogonality plot saved to {ortho_plot_filename}") 
+    plt.tight_layout()
+    plot_path = os.path.join(log_dir, "setonet_trunk_orthogonality.png")
+    try:
+        plt.savefig(plot_path)
+        print(f"Trunk orthogonality plot saved to {plot_path}")
+    except Exception as e:
+        print(f"Error saving trunk orthogonality plot: {e}")
+    plt.close() 
