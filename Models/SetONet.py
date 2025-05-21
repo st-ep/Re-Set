@@ -29,7 +29,7 @@ class SetONet(torch.nn.Module):
                  pos_encoding_max_freq=100.0, # Max frequency/scale for sinusoidal encoding
                  encoding_strategy='concatenate', # Strategy for combining positional and sensor features. Only 'concatenate' is supported.
                  aggregation_type: str = "mean",  # 'mean' or 'attention'
-                 attention_n_tokens: int = 8,     # k – number of learnable query tokens
+                 attention_n_tokens: int = 1,     # k – number of learnable query tokens
                  ):
         super().__init__()
 
@@ -59,9 +59,10 @@ class SetONet(torch.nn.Module):
         if self.aggregation not in ["mean", "attention"]:
             raise ValueError("aggregation_type must be either 'mean' or 'attention'")
         self.attention_n_tokens = attention_n_tokens
+        self.attention_n_heads = 4 # Default or make configurable if needed
 
         if self.aggregation == "attention":
-            from utils.attention_pool import AttentionPool
+            from .utils.attention_pool import AttentionPool
             self.pool = AttentionPool(phi_output_size,
                                       n_heads=4,
                                       n_tokens=self.attention_n_tokens)
